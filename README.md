@@ -1,5 +1,5 @@
 # Botson-Discord bot with openai api 
-#Create an .env file and put your keys for discord bot api there and openai api.
+#Create an .env file and put your keys for discord bot api there and openai api, put this file in a folder together with the other files. 
 #In the .env file you write 
 #OPENAI_API_KEY="your key for open ai api"
 #DISCORD_BOT_TOKEN="your key for the discord bot token"
