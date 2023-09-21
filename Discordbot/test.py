@@ -3,22 +3,6 @@ import overthink
 from pdb import set_trace
 from overthink import Agent, AIAgent, describe, Context
 
-# Imaginary friends
-@describe(question = "Not a wall of text")
-async def ask_charlie(question: str):
-    """Your friend Charlie knows everything about farming.
-       He gives good but boring advice.
-    """
-    return await charlie.overthink(question)
-
-class Alice(AIAgent):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-        self.add_action(ask_charlie)
-    def __output__(generated):
-        pass
-
 # Fixes much text in-between runs
 print("""
    _
