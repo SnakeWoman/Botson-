@@ -12,14 +12,12 @@ Context = NewType('Context', dict)
 
 class Agent():
     actions = {}
-    system = "You're a helpful agent"
-    disable_actions = 'none'
+    system = "You're an helpful agent"
     max_depth = 5
 
     def __init__(self, **kwargs):
         if 'max_depth' in kwargs: self.max_depth = kwargs['max_depth']
-        if 'disable_actions' in kwargs: self.disable_actions = kwargs['disable_actions']
-        if 'system' in kwargs: self.max_depth = kwargs['system']
+        if 'system' in kwargs: self.system = kwargs['system']
         if 'actions' in kwargs:
             for action in actions: self.add_action(action)
 
@@ -83,7 +81,7 @@ class Agent():
         await self.output(_generated, context)
         return {**context, "depth": _depth, "messages": messages, "generated": _generated }
 
-    async def _invoke_action(self, name, arguments, context):
+    def _invoke_action(self, name, arguments, context):
         action = self.actions[name]
         sig = inspect.signature(action)
 
@@ -93,10 +91,10 @@ class Agent():
         prepped_args = (context, ) if has_context_arg else ()
         curry_action = partial(action, *prepped_args, **arguments)
         if is_async:
-            return await curry_action()
+            return curry_action()
         else:
             loop = get_event_loop()
-            return await loop.run_in_executor(None, curry_action)
+            return loop.run_in_executor(None, curry_action)
 
     # overidden by impl; OpenAI/GPT4All/Vicuna
     async def think(self, messages: list):
