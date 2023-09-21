@@ -2,8 +2,13 @@ import os
 import inspect
 import re
 import json
+from asyncio import get_event_loop
+from functools import partial
+from typing import NewType
 from dotenv import load_dotenv
 load_dotenv()
+
+Context = NewType('Context', dict)
 
 class Agent():
     actions = {}
@@ -26,45 +31,79 @@ class Agent():
     def dbg (self, *args):
         print("DBG>", *args)
 
-    async def overthink(self, messages = [], generated = [], depth = 0):
-        self.dbg(f"overthink(d:{depth})")
-        if (depth >= self.max_depth):
-            await self.output(generated)
-            return depth, generated
+    async def overthink(self, messages: list, **context):
+        """Perform recursive generation
+        This method loops back on when function_call is requested.
 
-        message = await self.think([
-            { "role": "system", "content": self.system },
-            *messages,
-            *generated
-        ])
-        generated.append(message)
+        Args:
+            messages (list): The initial list of messages
+            context (kwargs): passed through to output() # TODO: also actions?
+        """
+        _depth = 0
+        _generated = []
+        if '_depth' in context:
+            _depth = context.pop('_depth')
+        if '_generated' in context:
+            _generated = context.pop('_generated')
 
-        if message.get('function_call'):
-            name = message["function_call"]["name"]
-            args = json.loads(message["function_call"]["arguments"])
-            self.dbg(f"ACTION[{name}]({args})", message)
-            if (self.actions.get(name)):
-                result = await self.actions[name](**args)
-                if result is None:
-                    await self.output(generated)
-                    return (depth, generated)
+        self.dbg(f"Overthink(ROUND{_depth}, {context})")
+        if _depth < self.max_depth:
+            message = await self.think([
+                { "role": "system", "content": self.system },
+                *messages,
+                *_generated
+            ])
+            _generated.append(message)
 
-                # TODO: handle binary/attachments results, images, audio, video what not.
-                generated.append(message) # append message
-                generated.append({ "role": "function", "name": name, "content": result})
-                # Recurse with added info
-                return await self.overthink(messages, generated, depth + 1)
+            if message.get('function_call'):
+                name = message["function_call"]["name"]
+                arguments = json.loads(message["function_call"]["arguments"])
+                self.dbg(f"RUNNING[{name}]({arguments})", message)
 
-        # Terminal thought
-        await self.output(generated)
-        return depth, generated
+                if name in self.actions:
+                    result = await self._invoke_action(name, arguments, context)
+                    if result is True: result = "Done!"
+                    if result is not None and result is not False:
+                        if not isinstance(result, str):
+                            result = json.dumps(result)
+                        # TODO: handle binary/attachments results, images, audio, video what not.
+                        _generated.append(message) # append message
+                        # TODO: JSON stringify result
+                        _generated.append({ "role": "function", "name": name, "content": result})
+
+                        # Recurse with new generated output
+                        _depth+=1
+                        return await self.overthink(messages, **{
+                            **context,
+                            "_depth": _depth,
+                            "_generated": _generated
+                        })
+
+        # End of thought
+        await self.output(_generated, context)
+        return {**context, "depth": _depth, "messages": messages, "generated": _generated }
+
+    async def _invoke_action(self, name, arguments, context):
+        action = self.actions[name]
+        sig = inspect.signature(action)
+
+        has_context_arg = len([k for k, v in sig.parameters.items() if v.annotation is Context])
+        is_async = inspect.iscoroutinefunction(action)
+
+        prepped_args = (context, ) if has_context_arg else ()
+        curry_action = partial(action, *prepped_args, **arguments)
+        if is_async:
+            return await curry_action()
+        else:
+            loop = get_event_loop()
+            return await loop.run_in_executor(None, curry_action)
 
     # overidden by impl; OpenAI/GPT4All/Vicuna
-    async def think(self, messages):
+    async def think(self, messages: list):
         raise NotImplementedError()
 
     # override this method with and do channel.send()
-    async def output(self, generated):
+    async def output(self, generated: list, ctx):
         raise NotImplementedError()
 
     # Returns a registered actions as json-type-spec thingy
@@ -77,8 +116,8 @@ class AIAgent(Agent):
     function_call='auto'
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        if 'model' in kwargs: self.model = kwargs['model']
-        if 'function_call' in kwargs: self.function_call = kwargs['function_call']
+        self.model = kwargs.get('model', 'gpt-4')
+        self.function_call = kwargs.get('function_call', 'auto') # Set to 'never' to disable function calling
         import openai
         openai.api_key = kwargs['api_key'] if 'api_key' in kwargs else os.getenv("OPENAI_API_KEY")
         self.openai = openai
@@ -117,9 +156,14 @@ def to_json_schema(fn: callable):
 
     # Extracting parameter details
     properties = {}
-    for param, details in sig.parameters.items():
+
+    # Filter out all context-vars
+    args = [(k, v) for k, v in sig.parameters.items() if v.annotation is not Context]
+
+    for param, details in args:
         # Extract type annotations from signature
         param_type = details.annotation
+        if param_type is Context: continue # skip Ctx args
         if param_type == str:
             param_type = "string"
         elif param_type == bool:
@@ -133,7 +177,7 @@ def to_json_schema(fn: callable):
         }
 
     # Required parameters (those without default values)
-    required = [k for k, v in sig.parameters.items() if v.default == v.empty]
+    required = [k for k, v in args if v.default == v.empty]
 
     # Format everything into a JSON schema
     spec = {

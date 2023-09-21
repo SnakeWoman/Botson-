@@ -1,18 +1,43 @@
 import unittest
 import overthink
 from pdb import set_trace
+from overthink import Agent, AIAgent, describe, Context
+
+# Imaginary friends
+@describe(question = "Not a wall of text")
+async def ask_charlie(question: str):
+    """Your friend Charlie knows everything about farming.
+       He gives good but boring advice.
+    """
+    return await charlie.overthink(question)
+
+class Alice(AIAgent):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.add_action(ask_charlie)
+    def __output__(generated):
+        pass
+
+# Fixes much text in-between runs
+print("""
+   _
+||/ \   _ .__|_|_  _     _ |__|_
+oo\_/\/(/_|  |_| |(_)|_|(_|| ||_
+                         _|
+""")
 
 # --------------------------------
 # ----------- DEFINE AGENTS -----------
 # --------------------------------
 
 # Agent that has a hardcoded reply
-class DummyAgent(overthink.Agent):
+class DummyAgent(Agent):
     async def think(self, messages):
         [print(f"in< {m}") for m in messages]
         return { "role": "assistant", "content": "I'm hardcoded, i don't know" }
 
-    async def output(self, messages):
+    async def output(self, messages, ctx):
         [print(f"out> {m}") for m in messages]
 
 # Agent that always reacts with thumbs-up
@@ -28,8 +53,8 @@ class ActionAgent(DummyAgent):
         }
 
 # OpenAI Agent that prints results
-class TermAIAgent(overthink.AIAgent):
-    async def output(self, messages):
+class TermAIAgent(AIAgent):
+    async def output(self, messages, ctx):
         [print(f"out> {m}") for m in messages]
 
 # Define a test action
@@ -61,8 +86,8 @@ class TestOverthinkAgent(unittest.IsolatedAsyncioTestCase):
             { "role": "user", "content": "@molly> What is it that you don't like about blueberries?" }
         ]
         agent = DummyAgent()
-        depth, generated = await agent.overthink(messages)
-        self.assertEqual(depth, 0)
+        result = await agent.overthink(messages)
+        self.assertEqual(result['depth'], 0)
 
     async def test_ai(self):
         messages = [
@@ -72,9 +97,49 @@ class TestOverthinkAgent(unittest.IsolatedAsyncioTestCase):
         ]
         agent = ActionAgent()
         # Attach dummy action
-        agent.add_action(overthink.emoji_reaction)
-        depth, generated = await agent.overthink(messages)
-        self.assertEqual(depth, 0)
+        agent.add_action(emoji_reaction)
+        result = await agent.overthink(messages)
+        self.assertEqual(result['depth'], 0)
+
+    async def test_context(self):
+        messages = [
+            { "role": "user", "content": "@nombo> Yeah, i think so" },
+        ]
+        class ContextAgent(Agent):
+            async def think(self, messages):
+                return {
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {
+                        "name": "action_with_ctx",
+                        "arguments": "{\"a\":0}"
+                    }
+                }
+            async def output(self, messages, ctx):
+                # Ensure our var is availabe in output
+                if ctx.get('channel', 0) != 999: raise RuntimeError('output() context missing key')
+
+        # This feels brittle AF
+        @describe("An action wants to know disco-channel-id", a = "some number")
+        def action_with_ctx(random_name: Context, a: int):
+            if a != 0: raise RuntimeError('Expected var `a` to be 0')
+            if random_name.get('channel', 0) != 999: raise RuntimeError('action() context missing key')
+            return None
+
+        # Ensure context is not included in json-schema
+        spec = overthink.to_json_schema(action_with_ctx)
+        self.assertFalse('random_name' in spec['parameters']['properties'])
+        self.assertFalse('random_name' in spec['parameters']['required'])
+
+        # Boot the agent
+        agent = ContextAgent()
+        agent.add_action(action_with_ctx)
+
+
+        # Pretending we wanna keep track of discord channel-id
+        result = await agent.overthink(messages, channel=999)
+        self.assertEqual(result["channel"], 999) # included in result
+
 
 class TestJSONSchemaGenerator(unittest.TestCase):
     def test_pedant_doc(self):
